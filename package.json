@@ -22,7 +22,10 @@
     "better-sqlite3": "^13.0.3",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",
-    "wrangler": "4.115.0"
+    "wrangler": "^4.154.0"
+  },
+  "overrides": {
+    "iconv-lite": "^0.6.3"
   },
   "volta": {
     "node": "22.20.0"
