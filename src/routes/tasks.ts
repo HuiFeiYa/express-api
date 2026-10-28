@@ -1,9 +1,32 @@
-import { Router, Request, Response, NextFunction } from "express";
+import {
+  Router,
+  Request,
+  Response,
+  NextFunction,
+  type RequestHandler,
+} from "express";
 import { z } from "zod";
-import { getDb } from "../db";
-import { CreateTaskSchema, UpdateTaskSchema, toDto, type TaskRow } from "../schema";
+import {
+  CreateTaskSchema,
+  UpdateTaskSchema,
+  toDto,
+} from "../schema";
+import type { TasksRepo } from "../repo/types";
 
 const router = Router();
+
+function getRepo(req: Request): TasksRepo {
+  return req.app.get("repo") as TasksRepo;
+}
+
+// Express 4 不会自动捕获 async handler 的 rejection，需要包一层交给错误中间件
+function asyncHandler(
+  handler: (req: Request, res: Response, next: NextFunction) => Promise<void>,
+): RequestHandler {
+  return (req, res, next) => {
+    handler(req, res, next).catch(next);
+  };
+}
 
 // Zod 校验中间件
 function validateBody<T extends z.ZodTypeAny>(schema: T) {
@@ -22,80 +45,95 @@ function validateBody<T extends z.ZodTypeAny>(schema: T) {
 }
 
 // GET /api/tasks - 列表
-router.get("/", (_req, res) => {
-  const db = getDb();
-  const rows = db.prepare("SELECT * FROM tasks ORDER BY id DESC").all() as TaskRow[];
-  res.json(rows.map(toDto));
-});
+router.get(
+  "/",
+  asyncHandler(async (req, res) => {
+    const rows = await getRepo(req).list();
+    res.json(rows.map(toDto));
+  }),
+);
 
 // POST /api/tasks - 创建
-router.post("/", validateBody(CreateTaskSchema), (req, res) => {
-  const db = getDb();
-  const { name, description, completed } = req.body;
-  const info = db
-    .prepare(
-      "INSERT INTO tasks (name, description, completed) VALUES (?, ?, ?)",
-    )
-    .run(name, description ?? null, completed ? 1 : 0);
-
-  const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(info.lastInsertRowid) as TaskRow;
-  res.status(201).json(toDto(row));
-});
+router.post(
+  "/",
+  validateBody(CreateTaskSchema),
+  asyncHandler(async (req, res) => {
+    const { name, description, completed } = req.body;
+    const row = await getRepo(req).create({
+      name,
+      description: description ?? null,
+      completed: completed ?? false,
+    });
+    res.status(201).json(toDto(row));
+  }),
+);
 
 // GET /api/tasks/:id - 详情
-router.get("/:id", (req, res) => {
-  const db = getDb();
-  const id = Number(req.params.id);
-  if (Number.isNaN(id)) {
-    res.status(400).json({ error: "无效的 id" });
-    return;
-  }
-  const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as TaskRow | undefined;
-  if (!row) {
-    res.status(404).json({ error: "任务不存在" });
-    return;
-  }
-  res.json(toDto(row));
-});
+router.get(
+  "/:id",
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (Number.isNaN(id)) {
+      res.status(400).json({ error: "无效的 id" });
+      return;
+    }
+    const row = await getRepo(req).get(id);
+    if (!row) {
+      res.status(404).json({ error: "任务不存在" });
+      return;
+    }
+    res.json(toDto(row));
+  }),
+);
 
 // PATCH /api/tasks/:id - 更新
-router.patch("/:id", validateBody(UpdateTaskSchema), (req, res) => {
-  const db = getDb();
-  const id = Number(req.params.id);
-  if (Number.isNaN(id)) {
-    res.status(400).json({ error: "无效的 id" });
-    return;
-  }
+router.patch(
+  "/:id",
+  validateBody(UpdateTaskSchema),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (Number.isNaN(id)) {
+      res.status(400).json({ error: "无效的 id" });
+      return;
+    }
 
-  const existing = db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as TaskRow | undefined;
-  if (!existing) {
-    res.status(404).json({ error: "任务不存在" });
-    return;
-  }
+    const repo = getRepo(req);
+    const existing = await repo.get(id);
+    if (!existing) {
+      res.status(404).json({ error: "任务不存在" });
+      return;
+    }
 
-  const merged = { ...toDto(existing), ...req.body };
-  db.prepare(
-    "UPDATE tasks SET name = ?, description = ?, completed = ?, updated_at = datetime('now') WHERE id = ?",
-  ).run(merged.name, merged.description ?? null, merged.completed ? 1 : 0, id);
-
-  const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as TaskRow;
-  res.json(toDto(row));
-});
+    const merged = { ...toDto(existing), ...req.body };
+    const row = await repo.update(id, {
+      name: merged.name,
+      description: merged.description ?? null,
+      completed: merged.completed,
+    });
+    if (!row) {
+      res.status(404).json({ error: "任务不存在" });
+      return;
+    }
+    res.json(toDto(row));
+  }),
+);
 
 // DELETE /api/tasks/:id - 删除
-router.delete("/:id", (req, res) => {
-  const db = getDb();
-  const id = Number(req.params.id);
-  if (Number.isNaN(id)) {
-    res.status(400).json({ error: "无效的 id" });
-    return;
-  }
-  const info = db.prepare("DELETE FROM tasks WHERE id = ?").run(id);
-  if (info.changes === 0) {
-    res.status(404).json({ error: "任务不存在" });
-    return;
-  }
-  res.status(204).end();
-});
+router.delete(
+  "/:id",
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (Number.isNaN(id)) {
+      res.status(400).json({ error: "无效的 id" });
+      return;
+    }
+    const ok = await getRepo(req).remove(id);
+    if (!ok) {
+      res.status(404).json({ error: "任务不存在" });
+      return;
+    }
+    res.status(204).end();
+  }),
+);
 
 export default router;

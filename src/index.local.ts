@@ -1,7 +1,10 @@
-import app from "./app";
+import { createApp } from "./app";
+import { createLocalTasksRepo } from "./repo/local";
 
-// 本地开发入口：tsx watch 直接跑，Express 真正监听 TCP
-// 数据库用 better-sqlite3（首次启动自动建表 + 示例数据）
+// 本地开发入口：tsx watch 直接跑，Express 真正监听 TCP。
+// 数据库用 better-sqlite3（首次启动自动建表 + 示例数据）。
+const app = createApp(createLocalTasksRepo());
+
 const PORT = Number(process.env.PORT ?? 3000);
 
 app.listen(PORT, () => {
